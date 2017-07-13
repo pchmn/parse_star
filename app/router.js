@@ -4,7 +4,7 @@ const express = require('express'),
 module.exports = function(app) {
   const apiRoutes = express.Router();
 
-  apiRoutes.get("/journeys", journey.getJourneys);
+  apiRoutes.post("/journeys", journey.getJourneys);
 
   app.use('/api', apiRoutes);
 }

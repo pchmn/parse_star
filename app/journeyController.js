@@ -2,9 +2,49 @@ const cheerio = require('cheerio'),
 			request = require('request');
 var $;
 
-const url = "http://nmp-ihm.ctp.prod.canaltp.fr/fr/load/cM4Vcsgo/journey/result/?search%5Bfrom%5D%5Bautocomplete%5D=Mus%C3%A9e+Beaux+Arts+%28Rennes%29&search%5Bfrom%5D%5Bautocomplete-hidden%5D=stop_area%3ASAR%3ASA%3A1166&search%5Bto%5D%5Bautocomplete%5D=Villejean-Universit%C3%A9+%28Rennes%29&search%5Bto%5D%5Bautocomplete-hidden%5D=stop_area%3ASAR%3ASA%3A1297&search%5Bdatetime%5D%5Bdate%5D=13%2F07%2F2017&search%5Bdatetime_represents%5D=departure&search%5Bdatetime%5D%5Btime%5D%5Bhour%5D=17&search%5Bdatetime%5D%5Btime%5D%5Bminute%5D=50&search%5Bmodes%5D%5B%5D=physical_mode%3ABus%3Bphysical_mode%3ACoach&search%5Bmodes%5D%5B%5D=physical_mode%3AMetro&search%5Btraveler_type%5D%5B%5D=standard&search%5Bcount%5D=&search%5Bmin_nb_journeys%5D=3&search%5Bmax_nb_journeys%5D=";
+var fromStr = "", fromCoord = "",
+			toStr = "", toCoord = "",
+			date = "", hour = "", minute = "", timeRepresents = "departure",
+			travelerType = "standard",
+			busMode = true, metroMode = true;
+
 
 exports.getJourneys = function(req, res, next) {
+	// form
+	fromStr = req.body.from_str;
+	fromCoord = req.body.from_coord;
+	toStr = req.body.to_str;
+	toCoord = req.body.to_coord;
+	date = req.body.date;
+	hour = req.body.hour;
+	minute = req.body.minute;
+	timeRepresents = "departure" || req.body.time_represents;
+	travelerType = "standard" || req.body.traveler_type;
+	busMode = req.body.bus_mode || true;
+	metroMode = req.body.metro_mode || true;
+	// create url
+	var url = "http://nmp-ihm.ctp.prod.canaltp.fr/fr/load/cM4Vcsgo/journey/result/?"+
+						"search[from][autocomplete]=" + fromStr +
+						"&search[from][autocomplete-hidden]=" + fromCoord +
+						"&search[to][autocomplete]=" + toStr +
+						"&search[to][autocomplete-hidden]=" + toCoord +
+						"&search[datetime][date]=" + date +
+						"&search[datetime_represents]=" + timeRepresents +
+						"&search[datetime][time][hour]=" + hour + "&search[datetime][time][minute]=" + minute + 
+						"&search[traveler_type][]=" + travelerType +
+						"&search[count]=&search[min_nb_journeys]=1&search[max_nb_journeys]=";
+	// modes
+	if(busMode && metroMode)
+		url += "&search[modes][]=physical_mode:Bus;physical_mode:Coach&search[modes][]=physical_mode:Metro";
+	else if(busMode)
+		url += "&search[modes][]=physical_mode:Bus;physical_mode:Coach";
+	else if(metroMode)
+		url += "&search[modes][]=physical_mode:Bus;physical_mode:Coach";
+	else
+		return res.status(400).json({error: "You must provide at least one mode"});
+
+	console.log(url)
+
 	request(url, function (error, response, html) {
 	  if (!error && response.statusCode == 200) {
 	    parse(html, req, res, next);
@@ -89,17 +129,33 @@ function parseNoType($step) {
 function parsePublicTransport($step) {
 	element = {};
 	element.type = $step.find('div.ctp-picto span').attr('title');	
-	element.value = $step.find('div.ctp-picto img').attr('title');
-	element.sub_steps = [];
-	$step.find('div.ctp-info ul li.clearfix').each(function(m, elt) {
+	element.line = $step.find('div.ctp-picto img').attr('title');
+
+	// from to
+	$step.find('div.ctp-info ul li.clearfix').each(function(i, elt) {
+		const time = $(this).find('.ctp-time').text();
 		if($(this).hasClass('ctp-duration'))
 			element.duration = parseInt($(this).attr('data-duration'));
-		else if($(this).find('.ctp-time').text() != "") {
-			element.sub_steps[m] = {};
-			element.sub_steps[m].time = $(this).find('.ctp-time').text();
-			element.sub_steps[m].description = removeBlanks($(this).find('span.ctp-stop').text());		
+		else if(time != "") {
+			const description = removeBlanks($(this).find('span.ctp-stop').text());
+			if(description.includes("Prendre")) {
+				element.from = element.type == "Métro" ? getStop(description, "station"): getStop(description, "arrêt");
+				element.direction = getDirection(description);
+				element.departure = time;
+			}
+			else if(description.includes("Descendre")) {
+				element.to = element.type == "Métro" ? getStop(description, "station"): getStop(description, "arrêt");
+				element.arrival = time;
+			}	
 		}
-	});	
+	});
+	// steps
+	element.sub_steps = [];
+	element.sub_steps[0] = element.from;
+	$step.find('ul.ctp-stops-description li span.ctp-stop-name').each(function(j, elt) {
+		element.sub_steps[j+1] = $(this).text().trim();
+	});
+	element.sub_steps[element.sub_steps.length] = element.to;
 	return element;
 }
 
@@ -141,7 +197,13 @@ function removeBlanks(text) {
 }
 
 function getStop(text, splitter) {
-	return text.split(splitter)[1].match(/(\w+ *)*\(\w*\)/g)[0];
+	console.log(text, splitter)
+	console.log(text.split(splitter)[1].match(/([a-zA-Zéèàêâ\-]| )+\([a-zA-Zéèàêâ\-]+\)/g))
+	return text.split(splitter)[1].match(/([a-zA-Zéèàêâ\-]| )+\([a-zA-Zéèàêâ\-]+\)/g)[0].trim();
+}
+
+function getDirection(text) {
+	return text.split("direction de")[1].trim();
 }
 
 function timeStringToSeconds(timeString) {
